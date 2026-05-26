@@ -17,6 +17,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from fastapi import (
     FastAPI,
+    Depends,
+    Header,
     UploadFile,
     File,
     HTTPException,
@@ -49,6 +51,43 @@ from src.model.collaborative_model import CollaborativeRecommender
 from src.model.hybrid_model import HybridRecommender
 
 from functools import lru_cache
+
+from backend.csrf import CSRFMiddleware, generate_csrf_token, set_csrf_cookie, CSRFTokenResponse
+
+
+# ── OpenAPI CSRF header dependency ────────────────────────────────────
+# WHY a Depends() instead of just relying on the middleware?
+#
+# The CSRFMiddleware enforces the token at the ASGI level — it never
+# touches the OpenAPI schema that FastAPI builds from route signatures.
+# Swagger UI only renders parameters that appear in the schema, so the
+# X-CSRF-Token field is invisible to users testing the API interactively.
+#
+# This dependency solves that purely at the documentation layer:
+#   - It declares X-CSRF-Token as a required header parameter on every
+#     route that includes Depends(csrf_header_dep).
+#   - FastAPI adds it to the OpenAPI spec → Swagger UI renders the field.
+#   - The function body does nothing (returns None) because the middleware
+#     has already validated the token before the route handler runs.
+#   - No double-validation, no logic duplication.
+#
+# The `alias="X-CSRF-Token"` preserves the canonical mixed-case header
+# name in the OpenAPI spec so Swagger UI labels it correctly, even though
+# Starlette lowercases all incoming headers internally.
+async def csrf_header_dep(
+    x_csrf_token: str = Header(
+        ...,
+        alias="X-CSRF-Token",
+        description=(
+            "CSRF token obtained from **GET /api/csrf-token**. "
+            "Required on all state-mutating requests (POST / PUT / PATCH / DELETE). "
+            "Must match the value stored in the `csrftoken` cookie."
+        ),
+    ),
+) -> None:
+    """Declares X-CSRF-Token in OpenAPI. Enforcement is done by CSRFMiddleware."""
+    # The middleware has already validated the token before this runs.
+    # This function exists solely to make the header visible in Swagger UI.
 
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
@@ -154,8 +193,15 @@ app.add_middleware(
     allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    # Explicitly list X-CSRF-Token so browsers allow it in pre-flight.
+    allow_headers=["*", "X-CSRF-Token"],
 )
+
+# CSRF middleware must be registered AFTER CORSMiddleware so that
+# OPTIONS pre-flight requests are resolved by CORS before reaching
+# CSRF validation (OPTIONS is a safe method and is skipped anyway,
+# but ordering keeps the intent explicit).
+app.add_middleware(CSRFMiddleware)
 
 # ── Response Time Monitoring ─────────────────────────────────────────
 SLOW_RESPONSE_THRESHOLD_MS = 500.0
@@ -292,6 +338,45 @@ class RealtimeRecommendationRequest(BaseModel):
     item_title: str
     top_n: int = 10
     explain: bool = False
+
+
+# ── CSRF Token ───────────────────────────────────────────────────────
+@app.get(
+    "/api/csrf-token",
+    response_model=CSRFTokenResponse,   # Typed OpenAPI schema — documents the response shape
+    summary="Issue a CSRF token",
+    tags=["Security"],
+)
+def get_csrf_token(response: Response):
+    """
+    Issue a fresh CSRF token using the Double Submit Cookie pattern.
+
+    Call this endpoint once on page load before making any state-mutating
+    request (POST / PUT / PATCH / DELETE).  The token is delivered two ways:
+
+    1. Cookie `csrftoken` — set automatically by the browser on all
+       subsequent same-origin requests.  Readable by JavaScript (not HttpOnly)
+       so the frontend can copy it into the request header.
+
+    2. JSON body `csrfToken` — store this value in memory and attach it as
+       the `X-CSRF-Token` header on every mutating request.
+
+    The middleware validates that both values are present and identical.
+    A missing or mismatched token returns HTTP 403.
+    """
+    # Generate a 256-bit cryptographically secure token.
+    # secrets.token_hex(32) reads from the OS CSPRNG (/dev/urandom on Linux,
+    # BCryptGenRandom on Windows) — never use random.token_hex for security.
+    token = generate_csrf_token()
+
+    # Write the token into the cookie and set Cache-Control: no-store.
+    # set_csrf_cookie mutates the Response object in-place; FastAPI serialises
+    # the Set-Cookie header automatically when the response is sent.
+    set_csrf_cookie(response, token)
+
+    # Return the same token in the body so the frontend can store it in memory
+    # and inject it as the X-CSRF-Token header on mutating requests.
+    return CSRFTokenResponse(csrfToken=token)
 
 
 # ── Health ────────────────────────────────────────────────────────────
@@ -534,7 +619,10 @@ def autocomplete_products(
 
 # ── Upload ────────────────────────────────────────────────────────────
 @app.post("/api/upload")
-async def upload_dataset(file: UploadFile = File(...)):
+async def upload_dataset(
+    file: UploadFile = File(...),
+    _csrf: None = Depends(csrf_header_dep),
+):
     filename = file.filename or "data.csv"
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ('.csv', '.json'):
@@ -601,7 +689,7 @@ async def upload_dataset(file: UploadFile = File(...)):
 
 # ── Build Models ──────────────────────────────────────────────────────
 @app.post("/api/build")
-def build_models():
+def build_models(_csrf: None = Depends(csrf_header_dep)):
     sb = get_supabase()
     all_products = []
     page_size = 1000
@@ -732,7 +820,10 @@ async def websocket_recommendations(websocket: WebSocket):
 
 
 @app.post("/api/realtime/behavior")
-def realtime_behavior(req: RealtimeRecommendationRequest):
+def realtime_behavior(
+    req: RealtimeRecommendationRequest,
+    _csrf: None = Depends(csrf_header_dep),
+):
     if not models.get("ready") or not models.get("hybrid"):
         raise HTTPException(status_code=400, detail="Models not built yet. Train the models first.")
 
@@ -832,7 +923,10 @@ def get_weights():
 
 
 @app.put("/api/weights")
-def update_weights(w: WeightsUpdate):
+def update_weights(
+    w: WeightsUpdate,
+    _csrf: None = Depends(csrf_header_dep),
+):
     if not models["ready"]:
         raise HTTPException(400, "Models not built.")
     models["hybrid"].set_weights(w.alpha, w.beta, w.gamma)
@@ -885,7 +979,10 @@ def get_user_purchases(user_id: str, limit: int = 50):
 
 
 @app.post("/api/purchases")
-def create_purchase(data: PurchaseCreate):
+def create_purchase(
+    data: PurchaseCreate,
+    _csrf: None = Depends(csrf_header_dep),
+):
     sb = get_supabase()
     result = sb.table('purchases').insert({
         'user_id': data.user_id,
@@ -1018,7 +1115,10 @@ def get_trending_products(days: int = 7, limit: int = 10):
 
 # ── Feedback ──────────────────────────────────────────────────────────
 @app.post("/api/feedback")
-def submit_feedback(data: FeedbackCreate):
+def submit_feedback(
+    data: FeedbackCreate,
+    _csrf: None = Depends(csrf_header_dep),
+):
     return {
         "message": "Feedback submitted successfully",
         "feedback": {"user_id": data.user_id, "item": data.item, "feedback": data.feedback}
