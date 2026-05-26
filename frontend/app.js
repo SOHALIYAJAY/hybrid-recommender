@@ -182,7 +182,6 @@ const els = {
     modalProductDescription: $('modal-product-description'),
     modalProductScore: $('modal-product-score'),
     modalRecommendationsList: $('modal-recommendations-list'),
-  };
     categoryFilter: $('category-filter'),
     ratingFilter: $('rating-filter'),
     sentimentFilter: $('sentiment-filter'),
@@ -1127,14 +1126,12 @@ function renderRecommendations(data) {
     els.recsStrip.hidden = false;
 
     if (!recs.length) {
-    els.recsStrip.innerHTML = `
-        <div class="empty-recommendations">
-            <span class="empty-icon" aria-hidden="true">🔍</span>
-            <p>No recommendations found. Try a different product!</p>
-        </div>
-    `;
-    return;
-}
+        els.recsStrip.innerHTML = "";
+        document.getElementById("empty-state").hidden = false;
+        return;
+    }
+
+    document.getElementById("empty-state").hidden = true;
 
     els.recsStrip.innerHTML = recs.map((r) => {
         const title = r.title || 'Untitled';
@@ -1178,6 +1175,23 @@ async function loadRecommendations(title) {
     els.recsSection.hidden = false;
     setPageMeta(`Recommendations for ${title}`, `Products similar to "${title}" using hybrid filtering.`);
     els.recsLoader.hidden = false;
+    document
+.getElementById(
+"empty-state"
+)
+.hidden=true;
+
+els.recsStrip.innerHTML=`
+<div class="recommendation-loading">
+
+<div class="loading-card"></div>
+
+<div class="loading-card"></div>
+
+<div class="loading-card"></div>
+
+</div>
+`;
     els.recsStrip.hidden = true;
     els.recsStrip.innerHTML = '';
 
@@ -1349,21 +1363,6 @@ async function openProductModal(product) {
 function closeProductModal() {
     els.productModal.hidden = true;
 }
-
-    const categories = [...new Set(
-        products
-            .map(p => p.category)
-            .filter(Boolean)
-    )];
-
-    els.categoryFilter.innerHTML = `
-        <option value="">All Categories</option>
-        ${categories.map(cat =>
-            `<option value="${cat}">${cat}</option>`
-        ).join('')}
-    `;
-}
-
 // ── Event Listeners ─────────────────────────────────────────────────
 function bindEvents() {
     // Search
@@ -1518,7 +1517,6 @@ function renderHeatmap(labels, matrix) {
 
 // ── Infinite Scroll (Intersection Observer) ─────────────────────────
 function setupScrollObserver() {
-    try{
     // Tear down any previous observer to avoid duplicates / leaks
     destroyScrollObserver();
 
