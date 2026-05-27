@@ -5,6 +5,7 @@ FastAPI Backend for the Hybrid Recommender System — v3 (Supabase).
 Integrates PostgreSQL full-text search, Supabase auth, and the improved hybrid model.
 """
 import os
+import re
 import sys
 import io
 import time
@@ -170,12 +171,23 @@ def _normalize_search_query(query: str) -> str:
 
 
 def _escape_like_pattern(value: str) -> str:
+    """Escape special LIKE metacharacters to prevent pattern injection."""
     return (
         value
         .replace("\\", "\\\\")
         .replace("%", "\\%")
         .replace("_", "\\_")
     )
+
+
+_USER_ID_RE = re.compile(r"^[a-zA-Z0-9_\-\.@]{1,128}$")
+
+
+def _validate_user_id(user_id: str) -> str:
+    """Allowlist-validate user_id to block injection via path parameters."""
+    if not _USER_ID_RE.match(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user_id format.")
+    return user_id
 
 
 def _set_cache_headers(response: Response, status: str) -> None:
@@ -435,18 +447,19 @@ class WeightsUpdate(BaseModel):
 class PurchaseCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    user_id: str = Field(..., min_length=1)
+    # Pattern mirrors _USER_ID_RE — enforced at the Pydantic layer before any DB call.
+    user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
     product_id: int = Field(..., gt=0)
     rating: float = Field(0.0, ge=0.0, le=5.0)
-    review_text: str = ""
+    review_text: str = Field("", max_length=1000)
 
 
 class FeedbackCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    user_id: str = Field(..., min_length=1)
-    item: str = Field(..., min_length=1)
-    feedback: str = Field(..., min_length=1)
+    user_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_\-\.@]+$")
+    item: str = Field(..., min_length=1, max_length=500)
+    feedback: str = Field(..., min_length=1, max_length=2000)
 
 
 class RealtimeRecommendationRequest(BaseModel):
@@ -703,8 +716,17 @@ def search_items(
             products = result.data or []
         except Exception as e:
             logger.warning("FTS failed for '%s': %s", query, e)
+            # Use the Supabase RPC text-search fallback with a bound parameter
+            # instead of interpolating user input into the filter string.
             escaped_query = _escape_like_pattern(query)
-            result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').ilike('title', f'%{escaped_query}%').order('rating', desc=True).limit(limit).execute()
+            result = (
+                sb.table('products')
+                .select('id, title, description, category, rating, avg_sentiment, review_count')
+                .ilike('title', f'%{escaped_query}%')  # value passed as PostgREST filter param, not raw SQL
+                .order('rating', desc=True)
+                .limit(limit)
+                .execute()
+            )
             products = result.data or []
             for p in products:
                 p['rank'] = 0.0
@@ -747,7 +769,14 @@ def autocomplete_products(
         return {"suggestions": []}
     try:
         escaped_query = _escape_like_pattern(query)
-        result = sb.table('products').select('title').ilike('title', f'%{escaped_query}%').limit(limit).execute()
+        # Value is passed as a PostgREST filter parameter — not interpolated into raw SQL.
+        result = (
+            sb.table('products')
+            .select('title')
+            .ilike('title', f'%{escaped_query}%')
+            .limit(limit)
+            .execute()
+        )
         suggestions = []
         seen = set()
         for item in result.data or []:
@@ -1066,6 +1095,7 @@ def get_recommendations(
 @app.get("/api/user_recommend")
 def get_user_recommendations(user_id: str, top_n: int = 10, explain: bool = Query(False)):
     """Get hybrid recommendations for a user."""
+    _validate_user_id(user_id)  # allowlist-validate before model lookup
     if not models["ready"]:
         raise HTTPException(400, "Models not built. Build first via /api/build.")
     
@@ -1283,9 +1313,17 @@ def get_categories():
 
 # ── Purchases ─────────────────────────────────────────────────────────
 @app.get("/api/purchases/{user_id}")
-def get_user_purchases(user_id: str, limit: int = 50):
+def get_user_purchases(user_id: str, limit: int = Query(50, ge=1, le=200)):
+    _validate_user_id(user_id)  # allowlist-validate before any DB call
     sb = get_supabase()
-    result = sb.table('purchases').select('id, product_id, rating, review_text, purchased_at, products(title, category, rating)').eq('user_id', user_id).order('purchased_at', desc=True).limit(limit).execute()
+    result = (
+        sb.table('purchases')
+        .select('id, product_id, rating, review_text, purchased_at, products(title, category, rating)')
+        .eq('user_id', user_id)
+        .order('purchased_at', desc=True)
+        .limit(limit)
+        .execute()
+    )
     return {"purchases": result.data or []}
 
 
@@ -1299,7 +1337,7 @@ def create_purchase(
         'user_id': data.user_id,
         'product_id': data.product_id,
         'rating': max(0, min(5, data.rating)),
-        'review_text': data.review_text[:1000],
+        'review_text': data.review_text,  # max_length=1000 enforced by PurchaseCreate
     }).execute()
     _clear_response_cache()
     return {"purchase": result.data}
