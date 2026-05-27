@@ -535,9 +535,9 @@ def get_api_metrics():
 # ── Config ────────────────────────────────────────────────────────────
 @app.get("/api/config")
 def get_config():
+    # Expose only the URL — never return keys over an unauthenticated endpoint.
     return {
         "supabase_url": os.environ.get("SUPABASE_URL", ""),
-        "supabase_anon_key": os.environ.get("SUPABASE_ANON_KEY", ""),
     }
 
 
