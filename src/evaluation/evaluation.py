@@ -29,6 +29,8 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
+_BASE_DIR = Path(__file__).resolve().parent.parent.parent  # project root
+
 # ---------------------------------------------------------------------------
 # Types
 # ---------------------------------------------------------------------------
@@ -174,7 +176,7 @@ def _build_test_data(data_path: str | None = None):
     """
     from src.model.content_model import ContentRecommender
 
-    path = data_path or os.getenv("DATA_PATH", "data/products.csv")
+    path = data_path or os.getenv("DATA_PATH") or str(_BASE_DIR / "datasets" / "sample_products.csv")
     if not os.path.exists(path):
         return None, None, None, []
     df = pd.read_csv(path)
@@ -332,9 +334,7 @@ def run_evaluation(
         w.update(weights)
 
     # --- load data ---
-    path = data_path or os.getenv("DATA_PATH", "data/products.csv")
-    if not os.path.exists(path):
-        raise RuntimeError(f"Dataset not found at '{path}'. Upload a dataset first.")
+    path = data_path or os.getenv("DATA_PATH") or str(_BASE_DIR / "datasets" / "sample_products.csv")
 
     df = pd.read_csv(path)
 
@@ -527,7 +527,7 @@ def run_evaluation(
 
 def _load_or_build_tfidf(df: pd.DataFrame):
     """Load TF-IDF matrix from disk if available, else build from scratch."""
-    cache_path = Path(os.getenv("TFIDF_CACHE", "models/tfidf_matrix.npz"))
+    cache_path = Path(os.getenv("TFIDF_CACHE") or str(_BASE_DIR / "models" / "tfidf_matrix.npz"))
     if cache_path.exists():
         _reject_unsafe_cache(cache_path)
         if cache_path.suffix != ".npz":
@@ -549,7 +549,7 @@ def _load_or_build_tfidf(df: pd.DataFrame):
 
 def _load_or_build_svd(df: pd.DataFrame):
     """Load SVD matrix from disk if available, else build from scratch."""
-    cache_path = Path(os.getenv("SVD_CACHE", "models/svd_matrix.npy"))
+    cache_path = Path(os.getenv("SVD_CACHE") or str(_BASE_DIR / "models" / "svd_matrix.npy"))
     if cache_path.exists():
         _reject_unsafe_cache(cache_path)
         if cache_path.suffix != ".npy":

@@ -71,16 +71,14 @@ fairness_max_share: Optional[float] = None
 def startup_event():
     global _content_model, _collab_model, _item_df
     dm = DatasetManager()
-    data_dir = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "datasets"
-    )
+    data_dir = PROJECT_ROOT / "datasets"
 
     datasets_to_load = ["books.csv", "booksdata.csv", "ratings.csv"]
     loaded = False
     for filename in datasets_to_load:
-        filepath = os.path.join(data_dir, filename)
-        if os.path.exists(filepath):
-            dm.load_csv(filepath)
+        filepath = data_dir / filename
+        if filepath.exists():
+            dm.load_csv(str(filepath))
             loaded = True
             break
 

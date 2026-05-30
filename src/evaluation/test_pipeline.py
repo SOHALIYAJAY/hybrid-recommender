@@ -1,11 +1,13 @@
-"""Quick smoke test for the full pipeline."""
 import sys, os
-sys.path.insert(0, os.path.dirname(__file__))
+from pathlib import Path
+
+_BASE_DIR = Path(__file__).resolve().parent.parent.parent  # project root
+sys.path.insert(0, str(_BASE_DIR))
 
 print("1. Loading dataset...")
 from src.data.dataset_manager import DatasetManager
 dm = DatasetManager()
-dm.load_csv('datasets/sample_products.csv')
+dm.load_csv(str(_BASE_DIR / 'datasets' / 'sample_products.csv'))
 interaction_df, item_df = dm.merge_all()
 print(f"   Items: {len(item_df)}, Interactions: {len(interaction_df)}")
 

@@ -228,16 +228,20 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
 
 
 if __name__ == '__main__':
+    from pathlib import Path
+    _BASE_DIR = Path(__file__).resolve().parent.parent  # project root
+    _DATASETS = _BASE_DIR / 'datasets'
+
     print('=== Preprocessing Books Data ===')
-    books_df = pd.read_csv('datasets/booksdata.csv')
+    books_df = pd.read_csv(_DATASETS / 'booksdata.csv')
     books_df = preprocess_books_data(books_df)
 
     print('\n=== Preprocessing Ratings Data ===')
-    ratings_df = pd.read_csv('datasets/ratings.csv')
+    ratings_df = pd.read_csv(_DATASETS / 'ratings.csv')
     ratings_df = preprocess_ratings_data(ratings_df)
 
     print('\n=== Preprocessing Sentiment Data ===')
-    sentiment_df = pd.read_csv('datasets/customer_sentiment.csv')
+    sentiment_df = pd.read_csv(_DATASETS / 'Customer_Sentiment.csv')
     sentiment_df = preprocess_sentiment_data(sentiment_df)
 
     print('\nAll datasets preprocessed successfully!')

@@ -1,8 +1,12 @@
 import pandas as pd
+from pathlib import Path
+
+_BASE_DIR = Path(__file__).resolve().parent.parent.parent  # project root
+_DATASETS = _BASE_DIR / 'datasets'
 
 # Load datasets
-books = pd.read_csv("books.csv")
-ratings = pd.read_csv("ratings.csv")
+books = pd.read_csv(_DATASETS / 'books.csv')
+ratings = pd.read_csv(_DATASETS / 'ratings.csv')
 
 # Merge
 df = pd.merge(ratings, books, on="book_id")
@@ -17,6 +21,6 @@ df['description'] = df['title'] + " " + df['authors']
 df = df.head(5000)
 
 # Save with YOUR name
-df.to_csv("booksdata.csv", index=False)
+df.to_csv(_DATASETS / 'booksdata.csv', index=False)
 
 print("Dataset prepared successfully!")
