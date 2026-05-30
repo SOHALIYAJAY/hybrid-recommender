@@ -74,6 +74,8 @@ def csrf_header_dep():
     """Placeholder dependency — real CSRF validation is handled by CSRFMiddleware."""
     return None
 from data_adapter import adapt_data, read_file
+from backend.dataset_url_fetcher import dataset_buffer_from_url
+from backend.url_validation import UrlValidationError
 from nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from content_model import ContentRecommender
 from collaborative_model import CollaborativeRecommender
@@ -1136,20 +1138,47 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
             raise HTTPException(status_code=400, detail="JSON uploads must contain valid JSON.")
 
 
+async def _read_upload_payload(request: Request) -> tuple[bytes, str]:
+    """Load dataset bytes from multipart file upload or JSON ``url`` field."""
+    content_type = (request.headers.get("content-type") or "").lower()
+    if "application/json" in content_type:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid or disallowed URL")
+        url = payload.get("url") if isinstance(payload, dict) else None
+        if not url:
+            raise HTTPException(status_code=400, detail="Invalid or disallowed URL")
+        try:
+            buf, filename = dataset_buffer_from_url(str(url), max_bytes=MAX_UPLOAD_BYTES)
+        except UrlValidationError:
+            raise HTTPException(status_code=400, detail="Invalid or disallowed URL")
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid or disallowed URL")
+        return buf.getvalue(), filename
+
+    form = await request.form()
+    upload = form.get("file")
+    if upload is None:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    filename = getattr(upload, "filename", None) or "data.csv"
+    contents = await upload.read()
+    return contents, filename
+
+
 # ── Upload ────────────────────────────────────────────────────────────
 @app.post("/api/upload")
 async def upload_dataset(
-    file: UploadFile = File(...),
+    request: Request,
     admin=Depends(_require_admin_access)
 ):
     """Upload a CSV or JSON dataset and import into Supabase."""
     import math
-    filename = file.filename or "data.csv"
+    contents, filename = await _read_upload_payload(request)
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ('.csv', '.json'):
         raise HTTPException(400, "Only CSV and JSON files are supported.")
     try:
-        contents = await file.read()
         _validate_upload_bytes(filename, ext, contents)
         buf = io.BytesIO(contents)
         raw_df = read_file(buf, file_format=ext.replace('.', ''))

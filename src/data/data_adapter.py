@@ -248,6 +248,12 @@ def read_file(path_or_buffer, file_format=None) -> pd.DataFrame:
     """
     Read CSV or JSON into DataFrame.
     """
+    if isinstance(path_or_buffer, str):
+        lowered = path_or_buffer.strip().lower()
+        if lowered.startswith("http://") or lowered.startswith("https://"):
+            from backend.dataset_url_fetcher import dataset_buffer_from_url
+
+            path_or_buffer, _ = dataset_buffer_from_url(path_or_buffer)
 
     if file_format is None and isinstance(path_or_buffer, str):
 
