@@ -83,6 +83,7 @@ from hybrid_model import HybridRecommender
 
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
+logger = logging.getLogger(__name__)
 
 @app.on_event("startup")
 def download_nltk_assets():
