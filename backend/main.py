@@ -254,22 +254,12 @@ def _set_cached_response(key: str, value: Any) -> None:
         except (RedisError, json.JSONDecodeError):
             pass
 
-    with _cache_lock:
-        cached = _response_cache.get(key)
-
-        if not cached:
-            _cache_misses += 1
-            return None
-
-        expires_at, value = cached
-
-        if expires_at <= time.time():
-            _response_cache.pop(key, None)
-            _cache_misses += 1
-            return None
-
-        _cache_hits += 1
-        return value
+    value = _response_cache.get(key)
+    if value is None:
+        _cache_misses += 1
+        return None
+    _cache_hits += 1
+    return value
 
 
 def _set_cached_response(key: str, value: Any) -> None:
@@ -279,8 +269,7 @@ def _set_cached_response(key: str, value: Any) -> None:
         except (RedisError, TypeError):
             pass
 
-    with _cache_lock:
-        _response_cache.set(key, value)
+    _response_cache.set(key, value)
     with _cache_lock:
         _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
 
@@ -2091,6 +2080,51 @@ TRENDING_CACHE = {
 }
 
 
+@app.get("/api/trending")
+def get_trending_products(
+    days: int = Query(7, ge=1, le=365),
+    limit: int = Query(10, ge=1, le=100),
+):
+    """
+    Get trending products based on recent interactions.
+    """
+    global TRENDING_CACHE
+
+    # Cache for 1 hour
+    now = datetime.utcnow()
+
+    cache_key = (days, limit)
+    if isinstance(TRENDING_CACHE, dict) and "data" in TRENDING_CACHE and TRENDING_CACHE["data"] is None:
+        cached_val = None
+    else:
+        cached_val = TRENDING_CACHE.get(cache_key)
+
+    if cached_val is not None:
+        timestamp, cached_data = cached_val
+        if (now - timestamp).total_seconds() < 3600:
+            return cached_data
+
+    sb = get_supabase()
+
+    cutoff_date = (now - timedelta(days=days)).isoformat()
+
+    result = sb.table("purchases") \
+        .select("""
+            product_id,
+            rating,
+            purchased_at,
+            products (
+                id,
+                title,
+                category,
+                rating,
+                avg_sentiment,
+                review_count
+            )
+        """) \
+        .gte("purchased_at", cutoff_date) \
+        .execute()
+
 # Cache TTL for trending results (seconds). Separate from CACHE_TTL_SECONDS
 # because trending data is expensive to compute and changes slowly.
 TRENDING_CACHE_TTL = int(os.environ.get("TRENDING_CACHE_TTL", "3600"))
@@ -2235,6 +2269,12 @@ def get_trending_products(
         response: dict = {"results": [], "days": days, "limit": limit}
         _set_cached_response(cache_key, response)
         return response
+    if isinstance(TRENDING_CACHE, dict):
+        TRENDING_CACHE.pop("data", None)
+        TRENDING_CACHE.pop("timestamp", None)
+        TRENDING_CACHE[cache_key] = (now, response)
+    else:
+        TRENDING_CACHE = {cache_key: (now, response)}
 
     ranked = _bayesian_rank(stats, limit)
     response = {"results": ranked, "days": days, "limit": limit}
