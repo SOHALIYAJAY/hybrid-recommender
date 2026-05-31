@@ -261,8 +261,6 @@ def _set_cached_response(key: str, value: Any) -> None:
             pass
 
     _response_cache.set(key, value)
-    with _cache_lock:
-        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
 
 def _clear_response_cache() -> None:
     _response_cache.clear()
