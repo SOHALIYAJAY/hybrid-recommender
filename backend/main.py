@@ -2309,7 +2309,11 @@ def submit_feedback(
 
 # ── Export Dataset ────────────────────────────────────────────────────
 @app.get("/api/export/dataset")
-def export_dataset(columns: Optional[str] = Query(None)):
+def export_dataset(
+    request: Request,
+    _admin: None = Depends(_admin_access_dep),
+    columns: Optional[str] = Query(None),
+):
     if not models["ready"] or models["item_df"] is None:
         raise HTTPException(400, "Models not built. Build first via /api/build.")
     import pandas as pd
