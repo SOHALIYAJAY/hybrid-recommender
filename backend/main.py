@@ -113,6 +113,17 @@ _cache_misses = 0
 ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
 _rate_limit_buckets: dict = {}
 _rate_limit_lock = Lock()
+_cache_lock = Lock()
+
+try:
+    _redis_client = Redis.from_url(
+        os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+        socket_connect_timeout=1,
+        socket_timeout=1,
+    )
+    _redis_client.ping()
+except Exception:
+    _redis_client = None
 
 
 class _BoundedTTLCache:
@@ -208,19 +219,13 @@ def _cache_key(*parts: Any) -> str:
 
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses
-    return _response_cache.get(key)
-
-
-def _set_cached_response(key: str, value: Any) -> None:
-    _response_cache.set(key, value)
-    try:
-        cached = _redis_client.get(key)
-
-        if cached is not None:
-            return json.loads(cached)
-
-    except (RedisError, json.JSONDecodeError):
-        pass
+    if _redis_client is not None:
+        try:
+            cached = _redis_client.get(key)
+            if cached is not None:
+                return json.loads(cached)
+        except (RedisError, json.JSONDecodeError):
+            pass
 
     with _cache_lock:
         cached = _response_cache.get(key)
@@ -241,24 +246,20 @@ def _set_cached_response(key: str, value: Any) -> None:
 
 
 def _set_cached_response(key: str, value: Any) -> None:
-    try:
-        _redis_client.setex(key, CACHE_TTL_SECONDS, json.dumps(value))
-    except (RedisError, TypeError):
-        pass
+    if _redis_client is not None:
+        try:
+            _redis_client.setex(key, CACHE_TTL_SECONDS, json.dumps(value))
+        except (RedisError, TypeError):
+            pass
 
     with _cache_lock:
-        _response_cache[key] = (
-            time.time() + CACHE_TTL_SECONDS,
-            value,
-        )
+        _response_cache.set(key, value)
 
 def _clear_response_cache() -> None:
     _response_cache.clear()
-    with _cache_lock:
-        _response_cache.clear()
-        global _cache_hits, _cache_misses
-        _cache_hits = 0
-        _cache_misses = 0
+    global _cache_hits, _cache_misses
+    _cache_hits = 0
+    _cache_misses = 0
 
 
 @app.get("/api/cache_metrics")
