@@ -12,8 +12,10 @@ import time
 import logging
 import math
 import secrets
-import re
 import json
+import hmac
+import hashlib
+from pathlib import Path
 from redis import Redis
 from redis.exceptions import RedisError
 
@@ -27,16 +29,18 @@ except ModuleNotFoundError:
                 return str(value)
             return re.sub(r"<[^>]*>", "", str(value))
 
-from collections import deque, Counter
+from collections import deque, Counter, defaultdict
 from threading import Lock
 from datetime import datetime, timezone, timedelta
-
-from collections import defaultdict
 
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+_BACKEND_DIR = Path(__file__).resolve().parent
+_PROJECT_ROOT = _BACKEND_DIR.parent
+sys.path.insert(0, str(_PROJECT_ROOT))
+
+logger = logging.getLogger(__name__)
 
 from fastapi import (
     FastAPI,
@@ -61,7 +65,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from db import get_supabase, get_supabase_admin
-from backend.auth import _require_admin_access
 from backend.csrf import (
     CSRFMiddleware,
     CSRFTokenResponse,
@@ -73,6 +76,8 @@ from backend.csrf import (
 def csrf_header_dep():
     """Placeholder dependency — real CSRF validation is handled by CSRFMiddleware."""
     return None
+
+
 from data_adapter import adapt_data, read_file
 from backend.dataset_url_fetcher import dataset_buffer_from_url
 from backend.url_validation import UrlValidationError
@@ -113,7 +118,16 @@ _rate_limit_buckets: dict = {}
 _rate_limit_lock = Lock()
 _cache_lock = Lock()
 
-MOCK_PRODUCTS = [
+_redis_client: Redis | None = None
+try:
+    _redis_client = Redis.from_url(
+        os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+        socket_connect_timeout=1,
+        socket_timeout=1,
+    )
+    _redis_client.ping()
+except Exception:
+    _redis_client = None
     {
         "id": 1,
         "title": "Acoustic Noise-Cancelling Headphones",
