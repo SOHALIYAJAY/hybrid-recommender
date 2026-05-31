@@ -12,10 +12,8 @@ import time
 import logging
 import math
 import secrets
+import re
 import json
-import hmac
-import hashlib
-from pathlib import Path
 from redis import Redis
 from redis.exceptions import RedisError
 
@@ -29,18 +27,16 @@ except ModuleNotFoundError:
                 return str(value)
             return re.sub(r"<[^>]*>", "", str(value))
 
-from collections import deque, Counter, defaultdict
+from collections import deque, Counter
 from threading import Lock
 from datetime import datetime, timezone, timedelta
+
+from collections import defaultdict
 
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 
-_BACKEND_DIR = Path(__file__).resolve().parent
-_PROJECT_ROOT = _BACKEND_DIR.parent
-sys.path.insert(0, str(_PROJECT_ROOT))
-
-logger = logging.getLogger(__name__)
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from fastapi import (
     FastAPI,
@@ -65,6 +61,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from db import get_supabase, get_supabase_admin
+from backend.auth import _require_admin_access
 from backend.csrf import (
     CSRFMiddleware,
     CSRFTokenResponse,
@@ -76,11 +73,7 @@ from backend.csrf import (
 def csrf_header_dep():
     """Placeholder dependency — real CSRF validation is handled by CSRFMiddleware."""
     return None
-
-
 from data_adapter import adapt_data, read_file
-from backend.dataset_url_fetcher import dataset_buffer_from_url
-from backend.url_validation import UrlValidationError
 from nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from content_model import ContentRecommender
 from collaborative_model import CollaborativeRecommender
@@ -118,16 +111,7 @@ _rate_limit_buckets: dict = {}
 _rate_limit_lock = Lock()
 _cache_lock = Lock()
 
-_redis_client: Redis | None = None
-try:
-    _redis_client = Redis.from_url(
-        os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
-        socket_connect_timeout=1,
-        socket_timeout=1,
-    )
-    _redis_client.ping()
-except Exception:
-    _redis_client = None
+MOCK_PRODUCTS = [
     {
         "id": 1,
         "title": "Acoustic Noise-Cancelling Headphones",
@@ -1152,47 +1136,20 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
             raise HTTPException(status_code=400, detail="JSON uploads must contain valid JSON.")
 
 
-async def _read_upload_payload(request: Request) -> tuple[bytes, str]:
-    """Load dataset bytes from multipart file upload or JSON ``url`` field."""
-    content_type = (request.headers.get("content-type") or "").lower()
-    if "application/json" in content_type:
-        try:
-            payload = await request.json()
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid or disallowed URL")
-        url = payload.get("url") if isinstance(payload, dict) else None
-        if not url:
-            raise HTTPException(status_code=400, detail="Invalid or disallowed URL")
-        try:
-            buf, filename = dataset_buffer_from_url(str(url), max_bytes=MAX_UPLOAD_BYTES)
-        except UrlValidationError:
-            raise HTTPException(status_code=400, detail="Invalid or disallowed URL")
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid or disallowed URL")
-        return buf.getvalue(), filename
-
-    form = await request.form()
-    upload = form.get("file")
-    if upload is None:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-    filename = getattr(upload, "filename", None) or "data.csv"
-    contents = await upload.read()
-    return contents, filename
-
-
 # ── Upload ────────────────────────────────────────────────────────────
 @app.post("/api/upload")
 async def upload_dataset(
-    request: Request,
+    file: UploadFile = File(...),
     admin=Depends(_require_admin_access)
 ):
     """Upload a CSV or JSON dataset and import into Supabase."""
     import math
-    contents, filename = await _read_upload_payload(request)
+    filename = file.filename or "data.csv"
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ('.csv', '.json'):
         raise HTTPException(400, "Only CSV and JSON files are supported.")
     try:
+        contents = await file.read()
         _validate_upload_bytes(filename, ext, contents)
         buf = io.BytesIO(contents)
         raw_df = read_file(buf, file_format=ext.replace('.', ''))
