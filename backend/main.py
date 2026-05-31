@@ -2020,7 +2020,12 @@ def get_categories():
 
 # ── Purchases ─────────────────────────────────────────────────────────
 @app.get("/api/purchases/{user_id}")
-def get_user_purchases(user_id: str, limit: int = Query(50, ge=1, le=200)):
+def get_user_purchases(
+    request: Request,
+    user_id: str,
+    _admin: None = Depends(_admin_access_dep),
+    limit: int = Query(50, ge=1, le=200),
+):
     _validate_user_id(user_id)  # allowlist-validate before any DB call
     sb = get_supabase()
     result = (
