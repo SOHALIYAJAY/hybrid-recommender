@@ -826,15 +826,20 @@ def dashboard(request: Request):
     avg_recommendation_score = 0.0
     avg_sentiment_score = 0.0
     try:
-        prod_stats = sb.table('products').select('rating, avg_sentiment').limit(50000).execute().data or []
-        ratings = [float(p['rating']) for p in prod_stats if p.get('rating') not in (None, 0)]
-        sentiments = [float(p['avg_sentiment']) for p in prod_stats if p.get('avg_sentiment') is not None]
-        if ratings:
-            avg_recommendation_score = round(sum(ratings) / len(ratings), 4)
-        if sentiments:
-            avg_sentiment_score = round(sum(sentiments) / len(sentiments), 4)
+        avg_rating_result = sb.rpc('get_product_avg_rating').execute()
+        avg_rating_data = avg_rating_result.data
+        if avg_rating_data is not None:
+            avg_recommendation_score = round(float(avg_rating_data), 4)
     except Exception as e:
-        logger.warning("Dashboard: averages query failed: %s", e)
+        logger.warning("Dashboard: avg rating RPC failed: %s", e)
+
+    try:
+        avg_sentiment_result = sb.rpc('get_product_avg_sentiment').execute()
+        avg_sentiment_data = avg_sentiment_result.data
+        if avg_sentiment_data is not None:
+            avg_sentiment_score = round(float(avg_sentiment_data), 4)
+    except Exception as e:
+        logger.warning("Dashboard: avg sentiment RPC failed: %s", e)
 
     top_products = []
     try:
@@ -2381,6 +2386,73 @@ def get_trending_products(
     sb = get_supabase()
     now = datetime.now(timezone.utc)
     cutoff_date = (now - timedelta(days=days)).isoformat()
+
+    # Attempt database-side aggregation via RPC first.  The RPC returns one
+    # row per product (purchase_count + avg_rating), so only ~limit*3 rows
+    # cross the network instead of every raw purchase row.
+    rows = None
+    try:
+        rpc_result = sb.rpc(
+            "get_trending_products",
+            {"cutoff_date": cutoff_date, "limit_n": limit * 3},
+        ).execute()
+        if rpc_result.data is not None:
+            rows = rpc_result.data
+    except Exception:
+        rows = None
+
+    if rows is not None:
+        # RPC already aggregated; build a stats dict from the pre-summed rows.
+        stats: dict = {}
+        for r in rows:
+            pid = r.get("product_id")
+            if pid is None:
+                continue
+            stats[pid] = {
+                "count": int(r.get("purchase_count", 0)),
+                "ratings": [float(r.get("avg_rating", 0))] * max(int(r.get("purchase_count", 1)), 1),
+                "product": {
+                    "id": pid,
+                    "title": r.get("title", ""),
+                    "category": r.get("category", ""),
+                    "rating": r.get("rating", 0),
+                    "avg_sentiment": r.get("avg_sentiment", 0),
+                    "review_count": r.get("review_count", 0),
+                },
+            }
+    else:
+        # Fallback: fetch raw purchase rows with a hard row cap to prevent OOM.
+        # The cap (TRENDING_FETCH_LIMIT) bounds memory usage to a known maximum
+        # even when the RPC function has not been deployed yet.
+        try:
+            fallback_result = (
+                sb.table("purchases")
+                .select(
+                    "product_id, rating, purchased_at, "
+                    "products(id, title, category, rating, avg_sentiment, review_count)"
+                )
+                .gte("purchased_at", cutoff_date)
+                .limit(TRENDING_FETCH_LIMIT)
+                .execute()
+            )
+            raw_rows = fallback_result.data or []
+        except Exception as exc:
+            logger.error("Trending fallback query failed: %s", exc)
+            raw_rows = []
+
+        stats = _aggregate_purchase_rows(raw_rows)
+
+    if not stats:
+        response: dict = {"results": [], "days": days, "limit": limit}
+        _set_cached_response(cache_key, response)
+        return response
+    if isinstance(TRENDING_CACHE, dict):
+        TRENDING_CACHE.pop("data", None)
+        TRENDING_CACHE.pop("timestamp", None)
+        TRENDING_CACHE[cache_key] = (now, response)
+    else:
+        TRENDING_CACHE = {cache_key: (now, response)}
+
 
     # Attempt database-side aggregation via RPC first.  The RPC returns one
     # row per product (purchase_count + avg_rating), so only ~limit*3 rows
