@@ -15,6 +15,7 @@ import secrets
 from collections import deque, Counter, OrderedDict
 import re
 import json
+from redis.exceptions import RedisError
 
 try:
     import bleach
@@ -218,11 +219,14 @@ def _cache_key(*parts: Any) -> str:
 
 def _get_cached_response(key: str):
     global _cache_hits, _cache_misses
-    try:
-        cached = _redis_client.get(key)
+    if _redis_client is not None:
+        try:
+            cached = _redis_client.get(key)
 
-        if cached is not None:
-            return json.loads(cached)
+            if cached is not None:
+                return json.loads(cached)
+        except (RedisError, json.JSONDecodeError):
+            pass
 
     if _redis_client is not None:
         try:
@@ -249,26 +253,6 @@ def _set_cached_response(key: str, value: Any) -> None:
             pass
 
     _response_cache.set(key, value)
-    with _cache_lock:
-        cached = _response_cache.get(key)
-
-        if not cached:
-            _cache_misses += 1
-            return None
-
-        expires_at, value = cached
-
-        if expires_at <= time.time():
-            _response_cache.pop(key, None)
-            _cache_misses += 1
-            return None
-        _cache_hits += 1
-        return value
-
-
-def _set_cached_response(key: str, value: Any) -> None:
-    with _cache_lock:
-        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
 
 def _clear_response_cache() -> None:
     global _cache_hits, _cache_misses
@@ -1308,6 +1292,7 @@ def build_models(
     rate_limited = _apply_rate_limit(
         request, response, "build",
         "BUILD_RATE_LIMIT", 1,
+    )
     global STAGING_MODEL_VERSION
     sb = get_supabase_admin()
     if sb is None:
