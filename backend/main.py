@@ -113,6 +113,7 @@ ADMIN_API_TOKEN_ENV = "ADMIN_API_TOKEN"
 _rate_limit_buckets: dict = {}
 _rate_limit_lock = Lock()
 _cache_lock = Lock()
+_build_lock = Lock()
 
 try:
     _redis_client = Redis.from_url(
@@ -227,6 +228,11 @@ def _get_cached_response(key: str):
                 return json.loads(cached)
         except (RedisError, json.JSONDecodeError):
             pass
+    try:
+        cached = _redis_client.get(key)
+
+        if cached is not None:
+            return json.loads(cached)
 
     if _redis_client is not None:
         try:
@@ -243,6 +249,21 @@ def _get_cached_response(key: str):
 
     _cache_hits += 1
     return value
+    with _cache_lock:
+        cached = _response_cache.get(key)
+
+        if not cached:
+            _cache_misses += 1
+            return None
+
+        expires_at, value = cached
+
+        if expires_at <= time.time():
+            _response_cache.pop(key, None)
+            _cache_misses += 1
+            return None
+        _cache_hits += 1
+        return value
 
 
 def _set_cached_response(key: str, value: Any) -> None:
@@ -260,6 +281,16 @@ def _clear_response_cache() -> None:
     global _cache_hits, _cache_misses
     _cache_hits = 0
     _cache_misses = 0
+
+def _clear_response_cache() -> None:
+    global _cache_hits, _cache_misses
+    _response_cache.clear()
+    _cache_hits = 0
+    _cache_misses = 0
+
+def _clear_trending_cache() -> None:
+    global TRENDING_CACHE
+    TRENDING_CACHE = {"data": None, "timestamp": None}
 
 
 @app.get("/api/cache_metrics")
@@ -951,6 +982,17 @@ def search_items(
             p['rank'] = 0.0
 
 
+        products = [
+            p for p in products
+            if query_lower in str(p.get('title', '')).lower()
+            or query_lower in str(p.get('description', '')).lower()
+            or query_lower in str(p.get('category', '')).lower()
+        ]
+
+        for p in products:
+            p['rank'] = 0.0
+
+
     # Format response
     results = []
     
@@ -1266,6 +1308,7 @@ async def upload_dataset(
                 errors.append(f"Batch {start}-{start+len(rows)}: {str(e)[:100]}")
         models["ready"] = False
         _clear_response_cache()
+        _clear_trending_cache()
         result = {
             "message": f"Imported {imported:,} products from {filename}",
             "imported": imported, "total_rows": total,
@@ -1423,6 +1466,62 @@ def train_federated(
     rate_limited = _apply_rate_limit(
         request, response, "federated",
         "FEDERATED_RATE_LIMIT", 1,
+        },
+        "status": "staging",
+        "metrics": {
+            "ndcg": 0.0,
+            "latency_ms": 0.0,
+            "error_rate": 0.0,
+        },
+    }
+
+    STAGING_MODEL_VERSION = version
+    
+    models["content"] = content_model
+    models["collab"] = collab_model
+    models["hybrid"] = hybrid_model
+    models["item_df"] = item_df
+    models["ready"] = True
+    models["build_time"] = build_time
+    models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
+    _clear_response_cache()
+    _clear_trending_cache()
+    precomputed_count = _precompute_recommendation_cache(top_n=10, explain=False)
+    return {
+        "message": "Models built successfully!",
+        "model_version": version,
+        "status": "staging",
+        "items": len(item_df),
+        "has_collaborative": collab_model is not None,
+        "build_time_seconds": build_time,
+        "precomputed_recommendations": precomputed_count,
+    }
+
+@app.post("/api/train/federated")
+def train_federated(
+    req: FederatedTrainRequest,
+    _admin: None = Depends(_admin_access_dep),
+):
+    sb = get_supabase()
+    all_products = []
+    page_size = 1000
+    offset = 0
+    while True:
+        result = sb.table('products').select('id, title, description, category, rating, avg_sentiment, review_count').range(offset, offset + page_size - 1).execute()
+        batch = result.data or []
+        all_products.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+    if not all_products:
+        raise HTTPException(400, "No products in database. Upload data first.")
+
+    import pandas as pd
+    item_df = pd.DataFrame(all_products)
+    item_df['combined'] = (
+        item_df['title'].astype(str) + ' ' +
+        item_df['description'].fillna('').astype(str) + ' ' +
+        item_df['category'].fillna('').astype(str)
     )
     if rate_limited is not None:
         return rate_limited
@@ -1507,6 +1606,15 @@ def train_federated(
         models["build_time"] = build_time
         models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
         _clear_response_cache()
+    models["content"] = content_model
+    models["collab"] = collab_model
+    models["hybrid"] = hybrid_model
+    models["item_df"] = item_df
+    models["ready"] = True
+    models["build_time"] = build_time
+    models["last_trained_at"] = datetime.now(timezone.utc).isoformat()
+    _clear_response_cache()
+    _clear_trending_cache()
 
         return {
             "message": "Federated collaborative model trained successfully!",
@@ -2042,6 +2150,22 @@ def _fetch_categories_from_db(sb) -> list:
 
     # Tier 2: legacy RPC — kept for backwards compatibility.
     try:
+    try:
+        result = sb.rpc("get_distinct_categories", {}).execute()
+        if result.data is not None:
+            cats = [
+                row["category"] if isinstance(row, dict) else str(row)
+                for row in result.data
+                if (row["category"] if isinstance(row, dict) else str(row))
+            ]
+            if cats:
+                cats.sort()
+                return cats
+    except Exception:
+        pass
+
+    # Tier 2: legacy RPC — kept for backwards compatibility.
+    try:
         result = sb.rpc("get_categories", {}).execute()
         if result.data:
             cats = [c for c in result.data if c]
@@ -2113,6 +2237,7 @@ def create_purchase(
         'review_text': data.review_text,  # max_length=1000 enforced by PurchaseCreate
     }).execute()
     _clear_response_cache()
+    _clear_trending_cache()
     return {"purchase": result.data}
 # ── Trending Products ───────────────────────────────────────────────
 

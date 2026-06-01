@@ -8,6 +8,7 @@ import os
 BASE_DIR = Path(__file__).resolve().parent
 
 def preprocess_books_data(data: Union[str, Path, pd.DataFrame] = BASE_DIR / "datasets" / "booksdata.csv"):
+def preprocess_books_data(data: Union[str, Path, pd.DataFrame] = "datasets/booksdata.csv"):
     """
     Preprocess the books dataset.
     - Removes duplicate entries
@@ -39,6 +40,7 @@ def preprocess_books_data(data: Union[str, Path, pd.DataFrame] = BASE_DIR / "dat
     return df
 
 def preprocess_ratings_data(data: Union[str, Path, pd.DataFrame] = BASE_DIR / "datasets" / "ratings.csv"):
+def preprocess_ratings_data(data: Union[str, Path, pd.DataFrame] = "datasets/ratings.csv"):
     """
     Preprocess the ratings dataset.
     - Removes duplicate user-book pairs
@@ -69,6 +71,7 @@ def preprocess_ratings_data(data: Union[str, Path, pd.DataFrame] = BASE_DIR / "d
     return df
 
 def preprocess_sentiment_data(data: Union[str, Path, pd.DataFrame] = BASE_DIR / "datasets" / "Customer_Sentiment.csv"):
+def preprocess_sentiment_data(data: Union[str, Path, pd.DataFrame] = "datasets/Customer_Sentiment.csv"):
     """
     Preprocess the customer sentiment dataset.
     - Removes duplicates
