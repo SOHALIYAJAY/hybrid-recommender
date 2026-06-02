@@ -557,12 +557,18 @@ def get_config() -> dict:
 @app.get("/api/status")
 def status() -> dict:
     sb = get_supabase()
-    count_result = sb.table('products').select('id', count='exact').limit(0).execute()
-    product_count = count_result.count or 0
+    try:
+        count_result = sb.table('products').select('id', count='exact').limit(0).execute()
+        product_count = count_result.count or 0
+    except Exception as e:
+        logger.warning("Status check: product count query failed: %s", e)
+        product_count = 0
+
     return {
         "status": "healthy",
         "model_ready": models["ready"],
         "message": "Hybrid Recommender API running",
+        "product_count": product_count,
     }
 
 

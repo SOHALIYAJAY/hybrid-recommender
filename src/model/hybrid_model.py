@@ -36,7 +36,6 @@ class HybridRecommender:
                  use_causal_debiasing=False, causal_lambda=0.5, causal_clip=5.0,
                  causal_config=None, model_kwargs=None,
                  kg_model=None, delta=0.1):
-                 kg_model=None, delta=0.0):
         """
         content_model:        ContentRecommender instance
         collab_model:         CollaborativeRecommender instance (optional)
