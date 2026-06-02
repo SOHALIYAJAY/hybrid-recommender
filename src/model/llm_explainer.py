@@ -15,8 +15,7 @@ except ImportError:
     genai = None
 
 logger = logging.getLogger(__name__)
-# API key must be supplied via the GOOGLE_API_KEY environment variable.
-# Never hardcode credentials in source code.
+
 
 class LLMExplainer:
     def __init__(self, model_name: str = "gemini-pro", api_key: Optional[str] = None):
