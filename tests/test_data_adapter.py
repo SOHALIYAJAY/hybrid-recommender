@@ -111,7 +111,7 @@ class TestValidateRecommenderInputs:
             "item_id": ["i1", "i2"],
             "rating": [5.0, 4.0]
         })
-        with pytest.raises(ValueError, match="invalid value"):
+        with pytest.raises(ValueError, match="invalid or blank"):
             validate_recommender_inputs(
                 df,
                 user_col="user_id",

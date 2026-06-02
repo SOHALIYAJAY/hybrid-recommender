@@ -162,25 +162,52 @@ def preprocess_sentiment_data(df) -> pd.DataFrame:
 
 
 def detect_column(columns, keywords) -> Optional[str]:
-    """Detect a column by matching against a list of keywords (case-insensitive)."""
+    """Detect a column by matching against a list of keywords (case-insensitive).
+
+    Matching rules:
+    - Return exact (case-insensitive) column name first.
+    - Then match based on tokenized column name (split on non-alphanumeric).
+    - Avoid returning a user-like keyword when the candidate column clearly
+      indicates a rating/score field (e.g. 'customer_rating').
+    """
+    import re
+
     if not keywords:
         return None
 
-    # First pass: exact matches
-    for key in keywords:
+    # normalize keywords to lowercase for comparisons
+    normalized_keys = [str(k).lower() for k in keywords]
+
+    # First pass: exact matches (case-insensitive)
+    for key in normalized_keys:
         for col in columns:
-            if col.lower() == key:
-                return col
-                
-    # Second pass: substring matches
-    for key in keywords:
+            try:
+                if str(col).lower() == key:
+                    return col
+            except Exception:
+                continue
+
+    # Prepare a set of tokens that likely indicate a rating column
+    rating_indicators = {'rating', 'score', 'stars', 'review_score'}
+
+    # Second pass: tokenized matches (split on non-alphanumeric characters)
+    token_split = re.compile(r"[^a-z0-9]+")
+
+    for key in normalized_keys:
         for col in columns:
-            if key in col.lower():
-                # Avoid false positive where customer_rating is matched as user column
-                if key == 'customer' and ('rating' in col.lower() or 'score' in col.lower()):
+            col_str = str(col).lower()
+            tokens = [t for t in token_split.split(col_str) if t]
+
+            # Match when the keyword appears as a full token or as a token prefix
+            if key in tokens or any(t.startswith(key) for t in tokens):
+                # If the candidate column also includes a rating indicator,
+                # then it's more likely a rating column (avoid false positive
+                # when matching user/customer keywords against e.g. customer_rating)
+                if any(ind in tokens for ind in rating_indicators) and key in {'user', 'customer', 'reviewer'}:
                     continue
+
                 return col
-                
+
     return None
 
 
