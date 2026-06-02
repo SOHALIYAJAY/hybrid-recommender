@@ -8,6 +8,7 @@ if __name__ == '__main__':
     _BASE_DIR = Path(__file__).resolve().parent.parent  # project root
 
     df = pd.read_csv(_BASE_DIR / 'datasets' / 'books.csv')
+    df = pd.read_csv('datasets/books.csv')
 
     model = KnowledgeGraphRecommender(df)
 

@@ -177,6 +177,7 @@ def _build_test_data(data_path: str | None = None):
     from src.model.content_model import ContentRecommender
 
     path = data_path or os.getenv("DATA_PATH") or str(_BASE_DIR / "datasets" / "sample_products.csv")
+    path = data_path or os.getenv("DATA_PATH", "data/products.csv")
     if not os.path.exists(path):
         return None, None, None, []
     df = pd.read_csv(path)

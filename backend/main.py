@@ -64,17 +64,6 @@ load_dotenv()
 
 from db import get_supabase, get_supabase_admin
 from backend.auth import _require_admin_access
-from backend.csrf import (
-    CSRFMiddleware,
-    CSRFTokenResponse,
-    generate_csrf_token,
-    set_csrf_cookie,
-)
-
-
-def csrf_header_dep():
-    """Placeholder dependency — real CSRF validation is handled by CSRFMiddleware."""
-    return None
 from data_adapter import adapt_data, read_file
 from nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from content_model import ContentRecommender
@@ -206,6 +195,7 @@ def _cache_key(*parts: Any) -> str:
 
 
 def _get_cached_response(key: str):
+    global _cache_hits, _cache_misses
     try:
         cached = _redis_client.get(key)
 
@@ -219,6 +209,7 @@ def _get_cached_response(key: str):
         cached = _response_cache.get(key)
 
         if not cached:
+            global _cache_misses
             _cache_misses += 1
             return None
 
@@ -226,16 +217,20 @@ def _get_cached_response(key: str):
 
         if expires_at <= time.time():
             _response_cache.pop(key, None)
+            global _cache_misses
             _cache_misses += 1
             return None
-
+        global _cache_hits
         _cache_hits += 1
         return value
 
 
 def _set_cached_response(key: str, value: Any) -> None:
-    try:
-        _redis_client.setex(key, CACHE_TTL_SECONDS, json.dumps(value))
+    with _cache_lock:
+        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
+        # track misses -> when we set a value it was previously a miss for the next requests
+        # metric updated in _get_cached_response when read.
+
     except (RedisError, TypeError):
         pass
 
@@ -1196,6 +1191,8 @@ async def upload_dataset(
 ):
     """Upload a CSV or JSON dataset and import into Supabase."""
     import math
+    _csrf: None = Depends(csrf_header_dep),
+):
     filename = file.filename or "data.csv"
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ('.csv', '.json'):

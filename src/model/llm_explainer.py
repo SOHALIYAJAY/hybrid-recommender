@@ -36,9 +36,7 @@ class LLMExplainer:
                 "google-generativeai not installed. Falling back to text-based explanations."
             )
             self.client = None
-            return
-
-        if not self.api_key or self.api_key == "Your_API_KEY":
+        elif not self.api_key or self.api_key == "Your_API_KEY":
             logger.warning(
                 "GOOGLE_API_KEY not found. Set it as an environment variable to enable LLM explanations."
             )
