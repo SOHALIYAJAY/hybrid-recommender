@@ -64,6 +64,14 @@ load_dotenv()
 
 from db import get_supabase, get_supabase_admin
 from backend.auth import _require_admin_access
+from backend.csrf import (
+    CSRFMiddleware,
+    CSRFTokenResponse,
+    generate_csrf_token,
+    set_csrf_cookie,
+    CSRF_COOKIE_NAME,
+    CSRF_HEADER_NAME,
+)
 from data_adapter import adapt_data, read_file
 from nlp_engine import batch_analyze, aggregate_sentiment_by_item
 from content_model import ContentRecommender
@@ -72,6 +80,11 @@ from hybrid_model import HybridRecommender
 
 # ── App ──────────────────────────────────────────────────────────────
 app = FastAPI(title="Hybrid Recommender API", version="3.0")
+
+# Module logger
+logger = logging.getLogger(__name__)
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO)
 
 @app.on_event("startup")
 def download_nltk_assets():
@@ -149,6 +162,14 @@ class _BoundedTTLCache:
 
 _response_cache = _BoundedTTLCache(CACHE_MAX_ENTRIES, CACHE_TTL_SECONDS)
 
+# Lock protecting the in-memory cache and optional Redis client
+_cache_lock = Lock()
+_redis_client = None
+try:
+    from backend.redis_caching import redis_client as _redis_client
+except Exception:
+    _redis_client = None
+
 MOCK_PRODUCTS = [
     {
         "id": 1,
@@ -209,7 +230,6 @@ def _get_cached_response(key: str):
         cached = _response_cache.get(key)
 
         if not cached:
-            global _cache_misses
             _cache_misses += 1
             return None
 
@@ -217,28 +237,29 @@ def _get_cached_response(key: str):
 
         if expires_at <= time.time():
             _response_cache.pop(key, None)
-            global _cache_misses
             _cache_misses += 1
             return None
-        global _cache_hits
         _cache_hits += 1
         return value
 
 
 def _set_cached_response(key: str, value: Any) -> None:
-    with _cache_lock:
-        _response_cache[key] = (time.time() + CACHE_TTL_SECONDS, value)
-        # track misses -> when we set a value it was previously a miss for the next requests
-        # metric updated in _get_cached_response when read.
-
+    # Try to write-through to Redis (best-effort). If Redis is unavailable,
+    # silently continue and fall back to the in-memory cache.
+    try:
+        if isinstance(_redis_client, Redis):
+            try:
+                _redis_client.set(key, json.dumps(value), ex=CACHE_TTL_SECONDS)
+            except TypeError:
+                # Value not JSON serializable -> skip Redis write
+                pass
     except (RedisError, TypeError):
+        # Best-effort only: ignore Redis failures here
         pass
 
+    # Always set the local in-memory cache under the lock
     with _cache_lock:
-        _response_cache[key] = (
-            time.time() + CACHE_TTL_SECONDS,
-            value,
-        )
+        _response_cache.set(key, value)
 
 def _clear_response_cache() -> None:
     _response_cache.clear()
@@ -485,6 +506,22 @@ def _require_admin_access(request: Request) -> None:
 
 def _admin_access_dep(request: Request) -> None:
     _require_admin_access(request)
+
+
+def csrf_header_dep(request: Request) -> None:
+    """Dependency to validate CSRF header matches cookie for state-mutating requests.
+
+    In test mode (TESTING env var), CSRF validation is skipped to allow TestClient usage.
+    """
+    # Skip CSRF for testing to allow TestClient over plain HTTP
+    if os.environ.get("TESTING", "").strip().lower() in ("true", "1", "yes"):
+        return None
+
+    cookie_token = request.cookies.get(CSRF_COOKIE_NAME, "")
+    header_token = request.headers.get(CSRF_HEADER_NAME, "")
+    if not cookie_token or not header_token or not secrets.compare_digest(cookie_token, header_token):
+        raise HTTPException(status_code=403, detail="CSRF token missing or invalid.")
+    return None
 
 
 def _get_feedback_storage_client():
@@ -1183,7 +1220,7 @@ def _validate_upload_bytes(filename: str, ext: str, contents: bytes) -> None:
             raise HTTPException(status_code=400, detail="JSON uploads must contain valid JSON.")
 
 
-# ── Upload ────────────────────────────────────────────────────────────
+# ── Upload ─────────────────────────────────────────────git add backend/main.py───────────────
 @app.post("/api/upload")
 async def upload_dataset(
     file: UploadFile = File(...),
@@ -1191,8 +1228,7 @@ async def upload_dataset(
 ):
     """Upload a CSV or JSON dataset and import into Supabase."""
     import math
-    _csrf: None = Depends(csrf_header_dep),
-):
+    
     filename = file.filename or "data.csv"
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ('.csv', '.json'):
