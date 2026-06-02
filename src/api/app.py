@@ -17,6 +17,18 @@ import pandas as pd
 CURRENT_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = CURRENT_DIR.parent.parent  # Steps out of src/api to project root
 
+# Source-relative asset mapping: resolve assets relative to this source file
+ASSETS_DIR = PROJECT_ROOT / "frontend"
+
+def asset_path(*parts) -> str:
+    """Return an absolute filesystem path to an asset located under the
+    project's frontend/assets area, resolved relative to this source file.
+
+    This avoids relying on the current working directory when Streamlit is
+    launched from different locations or environments.
+    """
+    return str(ASSETS_DIR.joinpath(*parts))
+
 # Ensure internal source packages can be imported without directory errors
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -35,6 +47,20 @@ st.set_page_config(
     page_icon="🎯",
     layout="wide",
 )
+
+# Load frontend CSS from source-relative path when available. This ensures
+# Streamlit uses the same asset files regardless of the launch CWD.
+try:
+    css_file = Path(asset_path("styles.css"))
+    if css_file.exists():
+        try:
+            st.markdown(f"<style>{css_file.read_text(encoding='utf-8')}</style>", unsafe_allow_html=True)
+        except Exception:
+            # Non-fatal: if CSS can't be loaded, continue without failing the app
+            pass
+except Exception:
+    # Defensive: ensure no startup errors if asset resolution fails
+    pass
 
 st.title("🎯 Hybrid Recommender System")
 st.caption("Content-Based · Collaborative · Sentiment — all in one engine")
