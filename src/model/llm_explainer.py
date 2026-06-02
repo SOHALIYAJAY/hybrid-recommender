@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class LLMExplainer:
     def __init__(self, model_name: str = "gemini-pro", api_key: Optional[str] = None):
         self.model_name = model_name
-        # Resolve key: explicit argument takes priority, then env var, then None.
+     
         self.api_key = api_key or os.environ.get("GOOGLE_API_KEY") or None
 
         if genai is None:
